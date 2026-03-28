@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoKwik Connector Agent</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Connector Agent</h1>
+        <div id="input-view">
+            <input type="text" id="url-input" placeholder="Paste API docs URL...">
+            <button onclick="generate()">Generate</button>
+        </div>
+        <div id="progress-view" style="display:none;">
+            <div id="progress-steps"></div>
+        </div>
+        <div id="code-view" style="display:none;">
+            <pre id="code-output"></pre>
+            <button onclick="downloadCode()">Download</button>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
