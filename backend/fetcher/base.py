@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Optional
 
 
 @dataclass
@@ -11,7 +11,7 @@ class FetchResult:
 
     content_type: str  # "postman" | "openapi" | "webpage" | "pdf"
     raw_text: str  # Extracted text content
-    structured_data: dict[str, Any] | None = None  # Parsed JSON/YAML if applicable
+    structured_data: Optional[dict] = None  # Parsed JSON/YAML if applicable
 
 
 class BaseFetcher(ABC):

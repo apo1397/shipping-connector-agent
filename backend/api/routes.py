@@ -2,8 +2,11 @@
 
 import uuid
 import logging
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 from .schemas import (
     CreateSessionRequest,
@@ -33,6 +36,15 @@ def create_app(settings: Settings) -> FastAPI:
         allow_headers=["*"],
     )
     
+    # Serve frontend static files
+    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+
+        @app.get("/")
+        async def serve_index():
+            return FileResponse(str(frontend_dir / "index.html"))
+
     # Initialize orchestrator
     orchestrator = AgentOrchestrator(settings)
     
@@ -48,26 +60,34 @@ def create_app(settings: Settings) -> FastAPI:
             "provider_name_hint": request.provider_name_hint,
             "status": "created",
         }
-        logger.info(f"Created session {session_id} for URL {request.url}")
+        logger.info(
+            f"Session created | id={session_id} url={request.url} "
+            f"provider_hint={request.provider_name_hint!r}"
+        )
         return CreateSessionResponse(session_id=session_id)
-    
+
     @app.get("/api/v1/sessions/{session_id}/stream")
     async def stream_progress(session_id: str):
         """SSE stream of pipeline progress."""
         if session_id not in sessions:
+            logger.warning(f"Stream requested for unknown session | id={session_id}")
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
+        logger.info(f"SSE stream opened | session={session_id}")
+
         async def event_generator():
             session_data = sessions[session_id]
-            
-            # Run the orchestrator
+            event_count = 0
             async for event in orchestrator.run(
                 session_id=session_id,
                 url=session_data["url"],
                 provider_hint=session_data.get("provider_name_hint"),
             ):
-                yield f"data: {event}\n\n"
-        
+                event_count += 1
+                logger.debug(f"SSE event #{event_count} | session={session_id} data={event}")
+                yield {"data": event}
+            logger.info(f"SSE stream closed | session={session_id} total_events={event_count}")
+
         return EventSourceResponse(event_generator())
     
     @app.get("/api/v1/sessions/{session_id}/status", response_model=SessionStatusResponse)

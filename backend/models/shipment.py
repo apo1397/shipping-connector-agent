@@ -1,7 +1,7 @@
 """Standardized shipment tracking result model."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, Union
 from pydantic import BaseModel
 from .status_mapping import GoKwikShipmentStatus
 
@@ -12,8 +12,8 @@ class ScanEvent(BaseModel):
     timestamp: datetime
     status: GoKwikShipmentStatus
     status_raw: str  # Original provider status string
-    location: str | None = None
-    remarks: str | None = None
+    location: Optional[str] = None
+    remarks: Optional[str] = None
 
 
 class ShipmentTrackingResult(BaseModel):
@@ -23,11 +23,11 @@ class ShipmentTrackingResult(BaseModel):
     provider_name: str
     current_status: GoKwikShipmentStatus
     current_status_raw: str  # Original provider status string
-    current_status_timestamp: datetime | None = None
-    estimated_delivery: datetime | None = None
-    origin_city: str | None = None
-    destination_city: str | None = None
-    destination_pincode: str | None = None
-    weight_grams: float | None = None
+    current_status_timestamp: Optional[datetime] = None
+    estimated_delivery: Optional[datetime] = None
+    origin_city: Optional[str] = None
+    destination_city: Optional[str] = None
+    destination_pincode: Optional[str] = None
+    weight_grams: Optional[float] = None
     scan_history: list[ScanEvent] = []
     raw_response: dict[str, Any] = {}

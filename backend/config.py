@@ -8,9 +8,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # LLM Configuration
-    llm_provider: str = Field(default="anthropic")
+    llm_provider: str = Field(default="gemini")
     llm_api_key: str = Field(default="")
-    llm_model: str = Field(default="claude-3-5-sonnet-20241022")
+    llm_model: str = Field(default="gemini-2.0-flash")
+    llm_base_url: str = Field(default="")
 
     # Server Configuration
     host: str = Field(default="0.0.0.0")

@@ -1,7 +1,7 @@
 """Agent context - mutable state passed through the pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional, Union
 from backend.models import DiscoveredEndpoint, ParsedAPISpec
 
 
@@ -11,16 +11,16 @@ class AgentContext:
 
     session_id: str
     source_url: str
-    provider_name_hint: str | None = None
+    provider_name_hint: Optional[str] = None
 
     # Populated by fetcher
     raw_content: str = ""  # Markdown/text of the docs
     content_type: str = ""  # "postman" | "openapi" | "webpage" | "pdf"
-    structured_spec: dict[str, Any] | None = None  # Parsed Postman/OpenAPI
+    structured_spec: Optional[dict] = None  # Parsed Postman/OpenAPI
 
     # Populated by analyzer
-    tracking_api: DiscoveredEndpoint | None = None
-    auth_api: DiscoveredEndpoint | None = None
+    tracking_api: Optional[DiscoveredEndpoint] = None
+    auth_api: Optional[DiscoveredEndpoint] = None
     auth_mechanism: str = ""  # bearer_token, api_key_header, basic, oauth2, none
     provider_statuses: list[str] = field(default_factory=list)
     suggested_mappings: dict[str, str] = field(default_factory=dict)

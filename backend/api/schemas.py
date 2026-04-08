@@ -2,14 +2,14 @@
 
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, Union
 
 
 class CreateSessionRequest(BaseModel):
     """Request to create a new generation session."""
 
     url: str
-    provider_name_hint: str | None = None
+    provider_name_hint: Optional[str] = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -24,7 +24,7 @@ class StepStatus(BaseModel):
     step: str
     status: str  # pending, running, complete, error
     progress_percent: int = 0
-    error_message: str | None = None
+    error_message: Optional[str] = None
     details: dict[str, Any] = {}
 
 
@@ -67,5 +67,5 @@ class LiveTestResponse(BaseModel):
     """Result of live test."""
 
     success: bool
-    result: dict[str, Any] | None = None
-    error: str | None = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
