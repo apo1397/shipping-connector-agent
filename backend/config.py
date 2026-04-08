@@ -8,10 +8,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # LLM Configuration
-    llm_provider: str = Field(default="nvidia")
+    llm_provider: str = Field(default="gemini")
     llm_api_key: str = Field(default="")
-    llm_model: str = Field(default="deepseek-ai/deepseek-v3.2")
-    llm_base_url: str = Field(default="https://integrate.api.nvidia.com/v1")
+    llm_model: str = Field(default="gemini-2.5-flash")
+    llm_base_url: str = Field(default="")
 
     # Server Configuration
     host: str = Field(default="0.0.0.0")
