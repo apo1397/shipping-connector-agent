@@ -1,8 +1,9 @@
 """Agent context - mutable state passed through the pipeline."""
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
-from backend.models import DiscoveredEndpoint, ParsedAPISpec
+from typing import Any, Optional, List
+from backend.models import DiscoveredEndpoint, ProviderStatus
 
 
 @dataclass
@@ -14,20 +15,26 @@ class AgentContext:
     provider_name_hint: Optional[str] = None
 
     # Populated by fetcher
-    raw_content: str = ""  # Markdown/text of the docs
-    content_type: str = ""  # "postman" | "openapi" | "webpage" | "pdf"
-    structured_spec: Optional[dict] = None  # Parsed Postman/OpenAPI
+    raw_content: str = ""
+    content_type: str = ""
+    structured_spec: Optional[dict] = None
 
     # Populated by analyzer
     tracking_api: Optional[DiscoveredEndpoint] = None
     auth_api: Optional[DiscoveredEndpoint] = None
-    auth_mechanism: str = ""  # bearer_token, api_key_header, basic, oauth2, none
-    provider_statuses: list[str] = field(default_factory=list)
-    suggested_mappings: dict[str, str] = field(default_factory=dict)
+    auth_mechanism: str = ""
+    provider_statuses: List[ProviderStatus] = field(default_factory=list)
+    suggested_mappings: dict = field(default_factory=dict)
 
     # Set by user confirmation
-    confirmed_mappings: dict[str, str] = field(default_factory=dict)
+    confirmed_mappings: dict = field(default_factory=dict)
+
+    # Pause/resume for user review
+    review_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     # Populated by generator
-    generated_files: dict[str, str] = field(default_factory=dict)  # filename -> code
-    validation_errors: list[str] = field(default_factory=list)
+    generated_files: dict = field(default_factory=dict)
+    validation_errors: List[str] = field(default_factory=list)
+
+    # Test results
+    test_results: List[dict] = field(default_factory=list)

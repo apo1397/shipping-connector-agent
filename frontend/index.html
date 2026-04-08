@@ -1,24 +1,157 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GoKwik Connector Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-    <div class="container">
-        <h1>Connector Agent</h1>
-        <div id="input-view">
-            <input type="text" id="url-input" placeholder="Paste API docs URL...">
-            <button onclick="generate()">Generate</button>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-5xl mx-auto px-4 py-8">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">GoKwik Connector Agent</h1>
+            <p class="text-gray-500 mt-1">Generate shipping provider connectors from API docs</p>
         </div>
-        <div id="progress-view" style="display:none;">
-            <div id="progress-steps"></div>
+
+        <!-- Step Indicator -->
+        <div class="flex items-center justify-center mb-10" id="step-indicators">
+            <div class="step-indicator active" data-step="1"><span>1</span><small>Input</small></div>
+            <div class="step-line"></div>
+            <div class="step-indicator" data-step="2"><span>2</span><small>APIs</small></div>
+            <div class="step-line"></div>
+            <div class="step-indicator" data-step="3"><span>3</span><small>Mapping</small></div>
+            <div class="step-line"></div>
+            <div class="step-indicator" data-step="4"><span>4</span><small>Code</small></div>
+            <div class="step-line"></div>
+            <div class="step-indicator" data-step="5"><span>5</span><small>Test</small></div>
         </div>
-        <div id="code-view" style="display:none;">
-            <pre id="code-output"></pre>
-            <button onclick="downloadCode()">Download</button>
+
+        <!-- Step 1: Input -->
+        <section id="step-1" class="step-section">
+            <div class="bg-white rounded-xl shadow-sm p-8">
+                <h2 class="text-xl font-semibold mb-4">Paste API Documentation URL</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Documentation URL</label>
+                        <input type="text" id="url-input" placeholder="https://www.postman.com/collection/..."
+                               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Provider Name (optional)</label>
+                        <input type="text" id="provider-input" placeholder="e.g. Xpressbees, Goswift..."
+                               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <button onclick="startAnalysis()" id="analyze-btn"
+                            class="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">
+                        Analyze Documentation
+                    </button>
+                </div>
+                <div id="progress-log" class="mt-6 hidden">
+                    <div class="flex items-center gap-2 mb-3">
+                        <div class="spinner"></div>
+                        <span id="progress-message" class="text-sm text-gray-600">Starting analysis...</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: Discovered APIs -->
+        <section id="step-2" class="step-section hidden">
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">Discovered APIs</h2>
+                <div class="bg-white rounded-xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-green-700">Tracking API</h3>
+                        <span id="tracking-confidence" class="confidence-badge"></span>
+                    </div>
+                    <div id="tracking-api-details" class="api-details"></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-purple-700">Authentication</h3>
+                        <span id="auth-type-badge" class="text-sm px-3 py-1 bg-purple-100 text-purple-700 rounded-full"></span>
+                    </div>
+                    <div id="auth-api-details" class="api-details"></div>
+                </div>
+                <button onclick="continueToMapping()"
+                        class="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">
+                    Continue to Status Mapping
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 3: Status Mapping -->
+        <section id="step-3" class="step-section hidden">
+            <div class="bg-white rounded-xl shadow-sm p-6">
+                <h2 class="text-xl font-semibold mb-4">Status Mapping</h2>
+                <p class="text-sm text-gray-500 mb-4">Review and adjust the suggested mappings.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left py-3 px-2 font-medium text-gray-700">Provider Status</th>
+                                <th class="text-left py-3 px-2 font-medium text-gray-700">Description</th>
+                                <th class="text-left py-3 px-2 font-medium text-gray-700">Terminal?</th>
+                                <th class="text-left py-3 px-2 font-medium text-gray-700">GoKwik Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mapping-table-body"></tbody>
+                    </table>
+                </div>
+                <button onclick="confirmMappings()" id="confirm-btn"
+                        class="w-full mt-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition">
+                    Confirm Mappings & Generate Code
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 4: Generated Code -->
+        <section id="step-4" class="step-section hidden">
+            <div class="bg-white rounded-xl shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold">Generated Connector</h2>
+                    <div class="flex gap-2">
+                        <button onclick="downloadCode()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Download ZIP</button>
+                        <button onclick="goToTest()" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Test Connector</button>
+                    </div>
+                </div>
+                <div class="flex gap-1 border-b border-gray-200 mb-4" id="code-tabs"></div>
+                <div id="code-display" class="rounded-lg overflow-hidden"></div>
+                <div id="validation-warnings" class="mt-4 hidden"></div>
+            </div>
+        </section>
+
+        <!-- Step 5: Live Test -->
+        <section id="step-5" class="step-section hidden">
+            <div class="bg-white rounded-xl shadow-sm p-6">
+                <h2 class="text-xl font-semibold mb-4">Live Test</h2>
+                <p class="text-sm text-gray-500 mb-4">Enter credentials and AWB numbers to test the connector.</p>
+                <div class="space-y-4">
+                    <div id="credential-fields"></div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">AWB Numbers (comma-separated)</label>
+                        <textarea id="awb-input" rows="2" placeholder="AWB123456, AWB789012"
+                                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"></textarea>
+                    </div>
+                    <button onclick="runTest()" id="test-btn"
+                            class="w-full py-3 bg-orange-600 text-white rounded-lg font-medium hover:bg-orange-700 transition">
+                        Run Test
+                    </button>
+                </div>
+                <div id="test-results" class="mt-6 hidden">
+                    <h3 class="font-semibold mb-3">Results</h3>
+                    <div id="test-results-body" class="space-y-3"></div>
+                </div>
+            </div>
+        </section>
+
+        <div id="error-banner" class="hidden mt-4 bg-red-50 border border-red-200 rounded-xl p-4">
+            <p class="text-red-700 text-sm" id="error-text"></p>
         </div>
     </div>
     <script src="/static/app.js"></script>

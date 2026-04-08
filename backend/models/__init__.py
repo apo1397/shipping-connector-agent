@@ -1,6 +1,6 @@
 from .status_mapping import GoKwikShipmentStatus
 from .shipment import ScanEvent, ShipmentTrackingResult
-from .api_spec import DiscoveredEndpoint, ParsedAPISpec
+from .api_spec import DiscoveredEndpoint, ParsedAPISpec, ProviderStatus
 
 __all__ = [
     "GoKwikShipmentStatus",
@@ -8,4 +8,5 @@ __all__ = [
     "ShipmentTrackingResult",
     "DiscoveredEndpoint",
     "ParsedAPISpec",
+    "ProviderStatus",
 ]
