@@ -1,4 +1,5 @@
 from typing import Optional, Union
+import asyncio
 import json
 import re
 import time
@@ -24,6 +25,14 @@ class LLMClient:
                 google_api_key=api_key,
                 temperature=0.1,
                 max_output_tokens=4096,
+            )
+        elif provider == "anthropic":
+            from langchain_anthropic import ChatAnthropic
+            self.llm = ChatAnthropic(
+                model=model,
+                api_key=api_key,
+                temperature=0.1,
+                max_tokens=4096,
             )
         else:
             from langchain_openai import ChatOpenAI
@@ -68,39 +77,57 @@ class LLMClient:
         logger.debug(f"LLM user prompt (first 500 chars):\n{user[:500]}")
 
         t0 = time.perf_counter()
-        try:
-            response = await self.llm.ainvoke(messages)
-            elapsed = time.perf_counter() - t0
-            text = response.content.strip()
+        max_retries = 4
+        for attempt in range(max_retries):
+            try:
+                response = await self.llm.ainvoke(messages)
+                elapsed = time.perf_counter() - t0
+                text = response.content.strip()
 
-            logger.info(
-                f"LLM response ← format={label} response_chars={len(text)} "
-                f"elapsed={elapsed:.2f}s"
-            )
-            logger.debug(f"LLM raw response:\n{text}")
+                logger.info(
+                    f"LLM response ← format={label} response_chars={len(text)} "
+                    f"elapsed={elapsed:.2f}s attempt={attempt+1}"
+                )
+                logger.debug(f"LLM raw response:\n{text}")
 
-            if response_format:
-                text = self._extract_json(text)
-                data = json.loads(text)
-                parsed = response_format(**data)
-                logger.debug(f"LLM parsed {label}: {parsed}")
-                return parsed
+                if response_format:
+                    text = self._extract_json(text)
+                    data = json.loads(text)
+                    parsed = response_format(**data)
+                    logger.debug(f"LLM parsed {label}: {parsed}")
+                    return parsed
 
-            return text
+                return text
 
-        except json.JSONDecodeError as e:
-            elapsed = time.perf_counter() - t0
-            logger.error(
-                f"LLM JSON parse failed | format={label} elapsed={elapsed:.2f}s | "
-                f"error={e} | raw_text={text!r:.300}"
-            )
-            raise
-        except Exception as e:
-            elapsed = time.perf_counter() - t0
-            logger.error(
-                f"LLM API error | format={label} elapsed={elapsed:.2f}s | {type(e).__name__}: {e}"
-            )
-            raise
+            except json.JSONDecodeError as e:
+                elapsed = time.perf_counter() - t0
+                logger.error(
+                    f"LLM JSON parse failed | format={label} elapsed={elapsed:.2f}s | "
+                    f"error={e} | raw_text={text!r:.300}"
+                )
+                raise  # JSON errors are not retryable
+
+            except Exception as e:
+                elapsed = time.perf_counter() - t0
+                err_str = str(e).lower()
+                retryable = any(kw in err_str for kw in (
+                    "503", "429", "resource_exhausted", "overloaded",
+                    "quota", "rate limit", "too many requests", "service unavailable",
+                ))
+                if retryable and attempt < max_retries - 1:
+                    wait = 2 ** attempt  # 1s, 2s, 4s
+                    logger.warning(
+                        f"LLM quota/overload error (attempt {attempt+1}/{max_retries}), "
+                        f"retrying in {wait}s | {type(e).__name__}: {e}"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+
+                logger.error(
+                    f"LLM API error | format={label} elapsed={elapsed:.2f}s | "
+                    f"{type(e).__name__}: {e}"
+                )
+                raise
 
     def _extract_json(self, text: str) -> str:
         """Extract raw JSON from a response that may have markdown code fences."""

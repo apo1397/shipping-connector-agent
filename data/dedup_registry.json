@@ -1,0 +1,14 @@
+{
+  "testprovider|https://example.com/docs": {
+    "request_id": "sess-abc",
+    "provider": "TestProvider",
+    "url": "https://example.com/docs",
+    "config_path": null
+  },
+  "rapidshyp|https://example.com/docs": {
+    "request_id": "test-001",
+    "provider": "RapidShyp",
+    "url": "https://example.com/docs",
+    "config_path": null
+  }
+}

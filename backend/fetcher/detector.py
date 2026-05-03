@@ -98,16 +98,35 @@ class FetcherDetector:
     # ------------------------------------------------------------------
 
     async def _fetch_raw(self, url: str, timeout: int) -> FetchResult:
-        """Generic fallback: fetch URL and return raw text content."""
+        """Generic fallback: fetch URL and return clean text content."""
+        from .html_extractor import extract_clean_text
+
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(url)
             response.raise_for_status()
             text = response.text
+            ct = response.headers.get("content-type", "")
+
+            # JSON / YAML → treat as OpenAPI spec
+            if "json" in ct or "yaml" in ct:
+                try:
+                    data = json.loads(text)
+                    return FetchResult(content_type="openapi", raw_text=text, structured_data=data)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            # Plain JSON response
             try:
                 data = json.loads(text)
                 return FetchResult(content_type="openapi", raw_text=text, structured_data=data)
             except (json.JSONDecodeError, ValueError):
                 pass
+
+            # HTML page — extract clean text via BeautifulSoup + html2text
+            if "<html" in text.lower()[:500] or "<!doctype" in text.lower()[:200]:
+                clean = extract_clean_text(text)
+                return FetchResult(content_type="webpage", raw_text=clean, structured_data=None)
+
             return FetchResult(content_type="webpage", raw_text=text, structured_data=None)
 
     def _is_postman_url(self, url: str, parsed: Any) -> bool:

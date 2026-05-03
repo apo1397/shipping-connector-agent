@@ -1,10 +1,12 @@
-// --- State ---
+// ─── State ──────────────────────────────────────────────────────────────
 let sessionId = null;
-let currentStep = 1;
-let discoveredApis = null;
-let mappings = [];
-let generatedFiles = {};
-let authMechanism = 'none';
+let providerName = '';
+let requestor = '@requestor';
+let authApiData = null;
+let trackingApiData = null;
+let providerStatuses = [];
+let connectorConfig = null;
+let approvalContext = null;
 
 const GOKWIK_STATUSES = [
     'order_placed','pickup_pending','pickup_scheduled','out_for_pickup','picked_up',
@@ -14,350 +16,492 @@ const GOKWIK_STATUSES = [
     'cancelled','lost','damaged','on_hold','unknown'
 ];
 
-// --- Step Navigation ---
-function showStep(num) {
-    document.querySelectorAll('.step-section').forEach(el => el.classList.add('hidden'));
-    document.getElementById(`step-${num}`).classList.remove('hidden');
-    document.querySelectorAll('.step-indicator').forEach(el => {
-        const s = parseInt(el.dataset.step);
-        el.classList.remove('active', 'complete');
-        if (s < num) el.classList.add('complete');
-        else if (s === num) el.classList.add('active');
-    });
-    document.querySelectorAll('.step-line').forEach((el, i) => {
-        el.classList.toggle('active', i < num - 1);
-    });
-    currentStep = num;
+// ─── Helpers ────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const show = (id) => $(id).classList.remove('hidden');
+const hide = (id) => $(id).classList.add('hidden');
+
+function setState(text, color = 'gray') {
+    const pill = $('state-pill');
+    pill.textContent = text;
+    pill.className = `px-2.5 py-1 rounded-full bg-${color}-100 text-${color}-700`;
 }
 
-function showProgress(msg) {
-    document.getElementById('progress-log').classList.remove('hidden');
-    document.getElementById('progress-message').textContent = msg;
-}
-
-function hideProgress() {
-    document.getElementById('progress-log').classList.add('hidden');
+function setJira(ticket) {
+    if (!ticket) return;
+    const pill = $('jira-pill');
+    pill.textContent = `JIRA: ${ticket}`;
+    pill.classList.remove('hidden');
 }
 
 function showError(msg) {
-    const banner = document.getElementById('error-banner');
-    document.getElementById('error-text').textContent = msg;
-    banner.classList.remove('hidden');
-    setTimeout(() => banner.classList.add('hidden'), 10000);
+    $('error-text').textContent = msg;
+    show('error-banner');
+    setTimeout(() => hide('error-banner'), 8000);
 }
 
-// --- Step 1: Start Analysis ---
-async function startAnalysis() {
-    const url = document.getElementById('url-input').value.trim();
-    if (!url) return showError('Please enter a documentation URL');
+function formatFieldLabel(field) {
+    return field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
-    const provider = document.getElementById('provider-input').value.trim();
-    const btn = document.getElementById('analyze-btn');
+// ─── Notification feed rendering ────────────────────────────────────────
+function appendNotification(n) {
+    const empty = $('feed-empty');
+    if (empty) empty.remove();
+
+    const feed = $('feed');
+    const node = document.createElement('div');
+    node.className = `feed-item feed-status-${n.status}`;
+
+    const icon = ({
+        started: '⋯',
+        passed: '✓',
+        failed: '✗',
+        needs_input: '?',
+    })[n.status] || '·';
+
+    const ts = new Date(n.ts).toLocaleTimeString();
+    const jiraTag = n.jira && n.jira !== 'not yet created'
+        ? `<span class="feed-jira">${n.jira}</span>`
+        : '';
+
+    node.innerHTML = `
+        <div class="feed-icon">${icon}</div>
+        <div class="feed-body">
+            <div class="feed-line">
+                <span class="feed-step">${n.step}</span>
+                <span class="feed-status">${n.status}</span>
+                <span class="feed-by">by ${n.by}</span>
+                ${jiraTag}
+                <span class="feed-ts">${ts}</span>
+            </div>
+            ${n.details ? `<div class="feed-details">${n.details}</div>` : ''}
+        </div>`;
+    feed.appendChild(node);
+    feed.scrollTop = feed.scrollHeight;
+
+    const count = feed.querySelectorAll('.feed-item').length;
+    $('feed-count').textContent = `${count} event${count === 1 ? '' : 's'}`;
+}
+
+// ─── Panel switching ────────────────────────────────────────────────────
+function showPanel(name) {
+    ['submit', 'clarify', 'staging', 'test', 'approval', 'config']
+        .forEach(p => hide(`panel-${p}`));
+    show(`panel-${name}`);
+}
+
+// ─── Step 1: Submit ─────────────────────────────────────────────────────
+async function startAnalysis() {
+    const url = $('url-input').value.trim();
+    if (!url) return showError('Documentation URL is required');
+    providerName = $('provider-input').value.trim();
+    requestor = ($('requestor-input').value.trim() || '@requestor');
+    if (!requestor.startsWith('@')) requestor = '@' + requestor;
+
+    const btn = $('analyze-btn');
     btn.disabled = true;
-    btn.textContent = 'Analyzing...';
-    showProgress('Creating session...');
+    btn.textContent = 'Submitting...';
+    hide('dedup-warning');
 
     try {
         const resp = await fetch('/api/v1/sessions', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url, provider_name_hint: provider || null})
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url,
+                provider_name_hint: providerName || null,
+                requestor,
+            }),
         });
+
+        if (resp.status === 409) {
+            const data = await resp.json();
+            $('dedup-warning').innerHTML = `
+                <strong>Duplicate request blocked.</strong><br>
+                ${data.message}<br>
+                Prior provider: <code>${data.prior_provider}</code><br>
+                Prior URL: <code>${data.prior_url}</code>
+            `;
+            show('dedup-warning');
+            btn.disabled = false;
+            btn.textContent = 'Submit request';
+            return;
+        }
+
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         sessionId = data.session_id;
+        setState('Pre-flight', 'blue');
         connectSSE(sessionId);
+        // Hide submit panel; the feed + subsequent panels take over
+        hide('panel-submit');
     } catch (e) {
-        showError('Failed to create session: ' + e.message);
+        showError('Failed to submit: ' + e.message);
         btn.disabled = false;
-        btn.textContent = 'Analyze Documentation';
+        btn.textContent = 'Submit request';
     }
 }
 
-// --- SSE Connection ---
+// ─── SSE handling ───────────────────────────────────────────────────────
 function connectSSE(sid) {
     const es = new EventSource(`/api/v1/sessions/${sid}/stream`);
     es.onmessage = (e) => {
-        const event = JSON.parse(e.data);
-        handleSSEEvent(event);
+        try {
+            const event = JSON.parse(e.data);
+            handleSSE(event);
+        } catch (err) {
+            console.warn('SSE parse error:', err);
+        }
     };
     es.onerror = () => {
-        hideProgress();
+        console.warn('SSE connection closed');
     };
 }
 
-function handleSSEEvent(event) {
+function handleSSE(event) {
+    console.log('[SSE]', event.type, event);
     switch (event.type) {
-        case 'step_start':
-            showProgress(event.message || `Running: ${event.step}...`);
+        case 'notification':
+            appendNotification(event);
             break;
+
+        case 'preflight_duplicate':
+            setState('Blocked — duplicate', 'red');
+            showError('Duplicate request: ' + event.message);
+            break;
+
+        case 'clarification_needed':
+            setState('Clarify endpoint', 'amber');
+            renderClarification(event);
+            break;
+
+        case 'staging_url_flagged':
+            setState('Confirm prod URL', 'orange');
+            $('staging-discovered').textContent = event.discovered_url;
+            showPanel('staging');
+            break;
+
+        case 'staging_url_resolved':
+            setState('Awaiting creds', 'blue');
+            // The next event (awaiting_creds_and_awb) will populate the test panel
+            break;
+
+        case 'awaiting_creds_and_awb':
+            authApiData = event.auth;
+            renderCredFields(event.auth, event.credentials_required);
+            setState('Awaiting creds + AWB', 'blue');
+            showPanel('test');
+            break;
+
+        case 'validations_passed':
+            setJira(event.jira_ticket);
+            break;
+
+        case 'validations_failed':
+            // Diagnosis already rendered by runLiveTest()'s response
+            setState('Test failed — retry', 'red');
+            break;
+
+        case 'awaiting_approval':
+            approvalContext = event;
+            renderApproval(event);
+            setState('Awaiting approval', 'amber');
+            showPanel('approval');
+            break;
+
+        case 'rejected':
+            setState('Rejected', 'red');
+            break;
+
         case 'step_complete':
-            handleStepComplete(event);
+            if (event.step === 'discover_apis' && event.data) {
+                trackingApiData = event.data.tracking_api;
+                authApiData = event.data.auth_api;
+                providerStatuses = event.data.provider_statuses || [];
+            }
+            if (event.step === 'generate_config' && event.data) {
+                connectorConfig = event.data.config;
+                renderConfig(connectorConfig);
+                setState('Done — handed off', 'green');
+                showPanel('config');
+            }
             break;
+
+        case 'config_ready':
+            // No-op; rendering already done on step_complete
+            break;
+
         case 'step_error':
-            hideProgress();
-            showError(`Error in ${event.step}: ${event.error}`);
-            break;
-        case 'mapping_review':
-            hideProgress();
-            mappings = event.mappings;
-            renderMappingTable(mappings);
-            showStep(3);
-            break;
-        case 'test_ready':
-            hideProgress();
+            showError(`${event.step}: ${event.error}`);
+            setState('Error', 'red');
             break;
     }
 }
 
-function handleStepComplete(event) {
-    const step = event.step;
-    if (step === 'discover_apis' && event.data) {
-        discoveredApis = event.data;
-        authMechanism = event.data.auth_mechanism || 'none';
-        renderApiCards(event.data);
-        hideProgress();
-        showStep(2);
-    } else if (step === 'generate_code' && event.data) {
-        generatedFiles = event.data.files || {};
-        renderCodeTabs(generatedFiles);
-        if (event.data.validation_errors && event.data.validation_errors.length > 0) {
-            showValidationWarnings(event.data.validation_errors);
-        }
-        hideProgress();
-        showStep(4);
+// ─── Clarification panel ────────────────────────────────────────────────
+function renderClarification(event) {
+    $('clarify-question').textContent = event.question || '';
+    const opts = (event.candidates || []).map((c, i) => `
+        <label class="flex items-start gap-2 p-2 bg-white rounded border border-amber-200 cursor-pointer hover:bg-amber-50">
+            <input type="radio" name="candidate" value="${i}" class="mt-0.5" ${i === 0 ? 'checked' : ''}>
+            <div class="text-xs">
+                <div class="font-medium text-gray-900">${c.name || ('Option ' + (i+1))}</div>
+                <div class="text-gray-600 mt-0.5">${c.description || ''}</div>
+                <code class="text-blue-700">${c.method || ''} ${c.url || ''}</code>
+            </div>
+        </label>`).join('');
+    $('clarify-options').innerHTML = opts;
+    showPanel('clarify');
+}
+
+async function submitClarification() {
+    const checked = document.querySelector('input[name="candidate"]:checked');
+    const idx = checked ? parseInt(checked.value) : 0;
+    const btn = $('clarify-btn');
+    btn.disabled = true;
+    btn.textContent = 'Applying...';
+    try {
+        await fetch(`/api/v1/sessions/${sessionId}/clarification`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ candidate_index: idx, focus_hint: '' }),
+        });
+        hide('panel-clarify');
+        setState('Discovering', 'blue');
+    } catch (e) {
+        showError('Clarification failed: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Use selected endpoint';
     }
 }
 
-// --- Step 2: Render API Cards ---
-function renderApiCards(data) {
-    renderEndpointCard('tracking-api-details', data.tracking_api);
-    const conf = data.tracking_api?.confidence || 0;
-    const confEl = document.getElementById('tracking-confidence');
-    confEl.textContent = `${Math.round(conf * 100)}% confidence`;
-    confEl.className = 'confidence-badge ' + (conf >= 0.7 ? 'confidence-high' : conf >= 0.4 ? 'confidence-medium' : 'confidence-low');
-
-    if (data.auth_api) {
-        renderEndpointCard('auth-api-details', data.auth_api);
-        document.getElementById('auth-type-badge').textContent = data.auth_api.auth_type || 'none';
-    } else {
-        document.getElementById('auth-api-details').innerHTML = '<p class="text-gray-500 text-sm">No dedicated auth endpoint — uses static API key or headers.</p>';
-        document.getElementById('auth-type-badge').textContent = 'none';
+// ─── Staging URL panel ──────────────────────────────────────────────────
+async function submitProdUrl() {
+    const url = $('prod-url-input').value.trim();
+    if (!url) return showError('Production base URL is required');
+    const btn = $('prod-url-btn');
+    btn.disabled = true;
+    btn.textContent = 'Confirming...';
+    try {
+        const resp = await fetch(`/api/v1/sessions/${sessionId}/prod-url`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prod_base_url: url }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // The server will fire the next SSE event (awaiting_creds_and_awb)
+    } catch (e) {
+        showError('Prod URL submit failed: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Confirm prod URL';
     }
 }
 
-function renderEndpointCard(containerId, endpoint) {
-    if (!endpoint) return;
-    const c = document.getElementById(containerId);
-    const rows = [
-        ['Method', `<span class="method-badge method-${endpoint.method}">${endpoint.method}</span>`],
-        ['URL', `<code class="text-sm bg-gray-100 px-2 py-1 rounded">${endpoint.url}</code>`],
-        ['Headers', endpoint.headers && Object.keys(endpoint.headers).length > 0
-            ? `<pre class="text-xs bg-gray-50 p-2 rounded">${JSON.stringify(endpoint.headers, null, 2)}</pre>` : '<span class="text-gray-400">None</span>'],
-        ['AWB Field', endpoint.awb_field_name ? `<code>${endpoint.awb_field_name}</code>` : '<span class="text-gray-400">N/A</span>'],
-    ];
-    if (endpoint.request_body) {
-        rows.push(['Request Body', `<pre class="text-xs bg-gray-50 p-2 rounded max-h-32 overflow-auto">${JSON.stringify(endpoint.request_body, null, 2)}</pre>`]);
+// ─── Test panel ─────────────────────────────────────────────────────────
+function renderCredFields(auth, credsRequired) {
+    const fields = (credsRequired && credsRequired.length) ? credsRequired
+        : (auth?.credentials_required?.length ? auth.credentials_required : ['api_key']);
+    const guideText = auth?.how_to_get_credentials;
+    if (guideText) {
+        $('cred-guide').textContent = guideText;
+        show('cred-guide');
     }
-    if (endpoint.query_params) {
-        rows.push(['Query Params', `<pre class="text-xs bg-gray-50 p-2 rounded">${JSON.stringify(endpoint.query_params, null, 2)}</pre>`]);
-    }
-    if (endpoint.response_schema) {
-        rows.push(['Response', `<pre class="text-xs bg-gray-50 p-2 rounded max-h-40 overflow-auto">${JSON.stringify(endpoint.response_schema, null, 2)}</pre>`]);
-    }
-    if (endpoint.reasoning) {
-        rows.push(['Reasoning', `<span class="text-sm text-gray-600">${endpoint.reasoning}</span>`]);
-    }
-    c.innerHTML = rows.map(([label, value]) =>
-        `<div class="detail-row"><div class="detail-label">${label}</div><div class="detail-value">${value}</div></div>`
-    ).join('');
-}
-
-function continueToMapping() {
-    showStep(3);
-    showProgress('Waiting for status extraction and mapping...');
-    // Pipeline continues in background — mapping_review event will trigger renderMappingTable
-    if (mappings.length > 0) {
-        hideProgress();
-    }
-}
-
-// --- Step 3: Mapping Table ---
-function renderMappingTable(statuses) {
-    const tbody = document.getElementById('mapping-table-body');
-    tbody.innerHTML = statuses.map((s, i) => {
-        const options = GOKWIK_STATUSES.map(gs =>
-            `<option value="${gs}" ${gs === s.suggested_mapping ? 'selected' : ''}>${gs}</option>`
-        ).join('');
-        return `<tr class="border-b border-gray-100">
-            <td class="py-3 px-2 font-mono text-sm">${s.code}</td>
-            <td class="py-3 px-2 text-sm text-gray-600">${s.description}</td>
-            <td class="py-3 px-2"><span class="text-xs px-2 py-1 rounded ${s.is_terminal ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}">${s.is_terminal ? 'Yes' : 'No'}</span></td>
-            <td class="py-3 px-2"><select class="mapping-select" data-code="${s.code}">${options}</select></td>
-        </tr>`;
+    $('credential-fields').innerHTML = fields.map(f => {
+        const isSecret = /password|secret|token|key/i.test(f);
+        return `
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">${formatFieldLabel(f)}</label>
+                <input type="${isSecret ? 'password' : 'text'}" id="cred-${f}"
+                       placeholder="${f}"
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono">
+            </div>`;
     }).join('');
 }
 
-async function confirmMappings() {
-    const selects = document.querySelectorAll('.mapping-select');
-    const confirmed = {};
-    selects.forEach(sel => { confirmed[sel.dataset.code] = sel.value; });
+async function runLiveTest() {
+    if (!sessionId) return showError('No active session');
 
-    const btn = document.getElementById('confirm-btn');
-    btn.disabled = true;
-    btn.textContent = 'Generating code...';
-    showProgress('Generating connector code...');
+    const fields = authApiData?.credentials_required?.length
+        ? authApiData.credentials_required : ['api_key'];
+    const credentials = {};
+    const missing = [];
+    fields.forEach(f => {
+        const v = $(`cred-${f}`)?.value.trim();
+        if (v) credentials[f] = v; else missing.push(formatFieldLabel(f));
+    });
+    if (missing.length) return showError(`Missing: ${missing.join(', ')}`);
 
-    try {
-        await fetch(`/api/v1/sessions/${sessionId}/mappings`, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({mappings: confirmed})
-        });
-        // Code generation will complete via SSE → step_complete for generate_code
-    } catch (e) {
-        showError('Failed to confirm mappings: ' + e.message);
-        btn.disabled = false;
-        btn.textContent = 'Confirm Mappings & Generate Code';
-    }
-}
+    const awb = $('awb-input').value.trim();
+    if (!awb) return showError('AWB number is required');
 
-// --- Step 4: Code Display ---
-function renderCodeTabs(files) {
-    const tabsContainer = document.getElementById('code-tabs');
-    const display = document.getElementById('code-display');
-    const filenames = Object.keys(files);
-    if (filenames.length === 0) return;
-
-    tabsContainer.innerHTML = filenames.map((fn, i) =>
-        `<button class="code-tab ${i === 0 ? 'active' : ''}" onclick="switchCodeTab('${fn}')">${fn}</button>`
-    ).join('');
-
-    switchCodeTab(filenames[0]);
-}
-
-function switchCodeTab(filename) {
-    document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.code-tab').forEach(t => { if (t.textContent === filename) t.classList.add('active'); });
-
-    const code = generatedFiles[filename] || '';
-    const lang = filename.endsWith('.json') ? 'json' : 'python';
-    const highlighted = Prism.highlight(code, Prism.languages[lang], lang);
-    document.getElementById('code-display').innerHTML = `<pre class="!m-0 !rounded-lg"><code class="language-${lang}">${highlighted}</code></pre>`;
-}
-
-function showValidationWarnings(errors) {
-    const el = document.getElementById('validation-warnings');
-    el.classList.remove('hidden');
-    el.innerHTML = `<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-        <p class="text-yellow-800 text-sm font-medium mb-1">Validation Warnings</p>
-        ${errors.map(e => `<p class="text-yellow-700 text-xs">- ${e}</p>`).join('')}
-    </div>`;
-}
-
-async function downloadCode() {
-    if (!sessionId) return;
-    window.location.href = `/api/v1/sessions/${sessionId}/download`;
-}
-
-function goToTest() {
-    renderCredentialFields();
-    showStep(5);
-}
-
-// --- Step 5: Live Test ---
-function renderCredentialFields() {
-    const container = document.getElementById('credential-fields');
-    let fields = '';
-    if (authMechanism === 'bearer_token' || authMechanism === 'api_key_header') {
-        fields = `<div><label class="block text-sm font-medium text-gray-700 mb-1">API Key / Token</label>
-            <input type="text" id="cred-api-key" placeholder="Enter API key or token"
-                   class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div>`;
-    } else if (authMechanism === 'basic') {
-        fields = `<div class="grid grid-cols-2 gap-4">
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                <input type="text" id="cred-username" class="w-full px-4 py-3 border border-gray-300 rounded-lg"></div>
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input type="password" id="cred-password" class="w-full px-4 py-3 border border-gray-300 rounded-lg"></div>
-        </div>`;
-    } else if (authMechanism === 'oauth2') {
-        fields = `<div class="grid grid-cols-2 gap-4">
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
-                <input type="text" id="cred-client-id" class="w-full px-4 py-3 border border-gray-300 rounded-lg"></div>
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
-                <input type="password" id="cred-client-secret" class="w-full px-4 py-3 border border-gray-300 rounded-lg"></div>
-        </div>`;
-    } else {
-        fields = `<div><label class="block text-sm font-medium text-gray-700 mb-1">Credentials (JSON)</label>
-            <textarea id="cred-json" rows="3" placeholder='{"api_key": "..."}'
-                      class="w-full px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm"></textarea></div>`;
-    }
-    container.innerHTML = fields;
-}
-
-function collectCredentials() {
-    if (authMechanism === 'bearer_token' || authMechanism === 'api_key_header') {
-        return {api_key: document.getElementById('cred-api-key')?.value || ''};
-    } else if (authMechanism === 'basic') {
-        return {username: document.getElementById('cred-username')?.value || '', password: document.getElementById('cred-password')?.value || ''};
-    } else if (authMechanism === 'oauth2') {
-        return {client_id: document.getElementById('cred-client-id')?.value || '', client_secret: document.getElementById('cred-client-secret')?.value || ''};
-    } else {
-        try { return JSON.parse(document.getElementById('cred-json')?.value || '{}'); } catch { return {}; }
-    }
-}
-
-async function runTest() {
-    const credentials = collectCredentials();
-    const awbText = document.getElementById('awb-input').value.trim();
-    if (!awbText) return showError('Enter at least one AWB number');
-
-    const awb_numbers = awbText.split(',').map(s => s.trim()).filter(Boolean);
-    const btn = document.getElementById('test-btn');
+    const btn = $('test-btn');
     btn.disabled = true;
     btn.textContent = 'Testing...';
+    hide('test-diagnosis');
 
     try {
-        const resp = await fetch(`/api/v1/sessions/${sessionId}/test`, {
+        const resp = await fetch(`/api/v1/sessions/${sessionId}/test-endpoint`, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({credentials, awb_numbers})
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ credentials, awb_number: awb }),
         });
-        const data = await resp.json();
-        renderTestResults(data.results || []);
+        const result = await resp.json();
+        renderTestDiagnosis(result);
     } catch (e) {
         showError('Test failed: ' + e.message);
     } finally {
         btn.disabled = false;
-        btn.textContent = 'Run Test';
+        btn.textContent = 'Run live test';
     }
 }
 
-function renderTestResults(results) {
-    const container = document.getElementById('test-results');
-    const body = document.getElementById('test-results-body');
-    container.classList.remove('hidden');
+function renderTestDiagnosis(result) {
+    const cls = result.classification || { classification: 'unknown' };
+    const passed = cls.classification === 'passed';
+    const colors = passed
+        ? 'bg-green-50 border-green-200 text-green-900'
+        : 'bg-red-50 border-red-200 text-red-900';
 
-    body.innerHTML = results.map(r => {
-        const cls = r.success ? 'success' : 'failure';
-        const badge = r.success
-            ? '<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full font-medium">PASS</span>'
-            : '<span class="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-full font-medium">FAIL</span>';
-        let details = '';
-        if (r.success && r.result) {
-            details = `<pre class="text-xs bg-gray-50 p-3 rounded mt-2 max-h-48 overflow-auto">${JSON.stringify(r.result, null, 2)}</pre>`;
-        } else if (r.error) {
-            details = `<p class="text-red-600 text-sm mt-1">${r.error}</p>`;
-        }
-        if (r.raw_response) {
-            details += `<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">Raw Response</summary>
-                <pre class="text-xs bg-gray-50 p-3 rounded mt-1 max-h-48 overflow-auto">${JSON.stringify(r.raw_response, null, 2)}</pre></details>`;
-        }
-        return `<div class="test-result-card ${cls}">
-            <div class="flex items-center justify-between">
-                <span class="font-mono text-sm font-medium">${r.awb}</span>
-                ${badge}
-            </div>
-            ${details}
-        </div>`;
+    const node = $('test-diagnosis');
+    node.className = `mt-4 p-3 rounded-lg border text-xs ${colors}`;
+
+    const action = cls.requestor_action
+        ? `<div class="mt-2 font-medium">Action: ${cls.requestor_action}</div>` : '';
+    const status = result.current_status
+        ? `<div class="mt-1">Detected status: <code>${result.current_status}</code></div>` : '';
+    const errLine = result.error
+        ? `<details class="mt-2"><summary class="cursor-pointer">Error detail</summary><pre class="text-xs mt-1 whitespace-pre-wrap">${result.error}</pre></details>` : '';
+    const rawLine = result.tracking_response
+        ? `<details class="mt-1"><summary class="cursor-pointer">Raw response</summary><pre class="text-xs mt-1 max-h-40 overflow-auto bg-white rounded p-2 border">${JSON.stringify(result.tracking_response, null, 2)}</pre></details>` : '';
+
+    node.innerHTML = `
+        <div class="font-semibold">${passed ? '✓ Passed' : '✗ ' + cls.classification}</div>
+        <div class="mt-1">${cls.reason || ''}</div>
+        ${status}${action}${errLine}${rawLine}
+    `;
+    show('test-diagnosis');
+}
+
+// ─── Approval panel ─────────────────────────────────────────────────────
+function renderApproval(ev) {
+    const tracking = ev.tracking_api || {};
+    const auth = ev.auth_api || {};
+    const test = ev.test_result || {};
+    const mappings = ev.mappings || [];
+
+    $('approval-jira').textContent = ev.jira_ticket_id || '';
+
+    $('approval-summary').innerHTML = `
+        <div class="bg-gray-50 rounded p-2">
+            <div class="text-gray-500 uppercase text-[10px] font-semibold mb-0.5">Endpoint</div>
+            <div class="font-mono text-gray-900">${tracking.method || '?'} ${tracking.url || '?'}</div>
+            ${ev.host_rewritten ? `<div class="text-orange-700 mt-1">Host rewritten from staging: <code>${ev.discovered_host_original || ''}</code></div>` : ''}
+        </div>
+        <div class="bg-gray-50 rounded p-2">
+            <div class="text-gray-500 uppercase text-[10px] font-semibold mb-0.5">Auth</div>
+            <div>${auth.auth_type || 'unknown'}</div>
+        </div>
+        <div class="bg-gray-50 rounded p-2">
+            <div class="text-gray-500 uppercase text-[10px] font-semibold mb-0.5">Test result</div>
+            <div>AWB <code>${test.tracking_response ? '—' : ''}</code> · status <code>${test.current_status || '—'}</code> · ${test.duration_ms || 0}ms</div>
+        </div>
+        <div class="bg-gray-50 rounded p-2">
+            <div class="text-gray-500 uppercase text-[10px] font-semibold mb-0.5">Mappings</div>
+            <div>${mappings.length} provider statuses</div>
+        </div>
+    `;
+
+    // Mapping table
+    const tbody = $('approval-mapping-body');
+    tbody.innerHTML = mappings.map(s => {
+        const opts = GOKWIK_STATUSES.map(g =>
+            `<option value="${g}" ${g === s.suggested_mapping ? 'selected' : ''}>${g}</option>`
+        ).join('');
+        return `<tr class="border-t border-gray-100">
+            <td class="py-1 px-2 font-mono">${s.code}</td>
+            <td class="py-1 px-2 text-gray-600">${s.description || ''}</td>
+            <td class="py-1 px-2"><span class="${s.is_terminal ? 'text-red-700' : 'text-gray-500'}">${s.is_terminal ? 'Yes' : 'No'}</span></td>
+            <td class="py-1 px-2"><select class="approval-mapping-select text-xs border border-gray-200 rounded" data-code="${s.code}">${opts}</select></td>
+        </tr>`;
     }).join('');
+}
+
+async function submitApproval(decision) {
+    const comment = $('approval-comment').value.trim();
+    if (decision === 'reject' && !comment) {
+        return showError('A comment is required to reject');
+    }
+
+    const confirmedMappings = {};
+    document.querySelectorAll('.approval-mapping-select').forEach(s => {
+        confirmedMappings[s.dataset.code] = s.value;
+    });
+
+    const btn = decision === 'approve' ? $('approve-btn') : $('reject-btn');
+    btn.disabled = true;
+    btn.textContent = decision === 'approve' ? 'Approving...' : 'Rejecting...';
+
+    try {
+        await fetch(`/api/v1/sessions/${sessionId}/approval`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                decision,
+                comment: comment || null,
+                approver: requestor,
+                confirmed_mappings: confirmedMappings,
+            }),
+        });
+        hide('panel-approval');
+    } catch (e) {
+        showError('Approval failed: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = decision === 'approve' ? 'Approve & handoff' : 'Reject';
+    }
+}
+
+// ─── Final config render ────────────────────────────────────────────────
+function renderConfig(config) {
+    const auth = config.authentication || {};
+    const tracking = config.tracking?.endpoint || {};
+    const statusMap = config.status_map || [];
+    const testRun = config.test_run || {};
+
+    $('config-summary').innerHTML = `
+        <div class="bg-blue-50 rounded p-2 border border-blue-100">
+            <div class="text-blue-600 uppercase text-[10px] font-semibold">Auth</div>
+            <div class="font-bold text-blue-900">${auth.type || 'unknown'}</div>
+        </div>
+        <div class="bg-green-50 rounded p-2 border border-green-100">
+            <div class="text-green-600 uppercase text-[10px] font-semibold">Tracking</div>
+            <div class="font-bold text-green-900">${tracking.method || '?'} ${tracking.path || tracking.url || '—'}</div>
+        </div>
+        <div class="bg-purple-50 rounded p-2 border border-purple-100">
+            <div class="text-purple-600 uppercase text-[10px] font-semibold">Statuses</div>
+            <div class="font-bold text-purple-900">${statusMap.length} mapped · ${statusMap.filter(s => s.is_terminal).length} terminal</div>
+        </div>
+        <div class="bg-orange-50 rounded p-2 border border-orange-100">
+            <div class="text-orange-600 uppercase text-[10px] font-semibold">Live test</div>
+            <div class="font-bold text-orange-900">${testRun.outcome?.success ? '✓ Passed' : '✗ ' + (testRun.outcome?.stage_reached || 'failed')}</div>
+        </div>
+    `;
+
+    const jsonStr = JSON.stringify(config, null, 2);
+    const highlighted = Prism.highlight(jsonStr, Prism.languages.json, 'json');
+    $('config-display').innerHTML =
+        `<pre class="!m-0 !rounded-lg p-3 text-xs leading-relaxed"><code class="language-json">${highlighted}</code></pre>`;
+}
+
+async function copyConfig() {
+    if (!connectorConfig) return;
+    await navigator.clipboard.writeText(JSON.stringify(connectorConfig, null, 2));
+    const btn = $('copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+}
+
+async function downloadConfig() {
+    if (!sessionId) return;
+    window.location.href = `/api/v1/sessions/${sessionId}/download`;
 }
